@@ -12,8 +12,8 @@ from typing import Dict, Any, Tuple
 LOCAL_TASK_SCHEMA = {
     "logprobs_scaling_law": {
         "file_path": "logprobs_scaling_dataset.csv",
-        "feature_names": ["params", "tokens", "log_params", "log_tokens"],
-        "target_name": "loss",
+        "feature_names": ["params", "tokens"],
+        "target_name": "logprobs",
         "group_column": "group"
     }
 }

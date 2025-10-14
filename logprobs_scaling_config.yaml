@@ -10,14 +10,14 @@ llm:
 prompt:
   system: |
     You are a scaling law discovery agent. Your goal is to find mathematical relationships
-    between model parameters, training tokens, and language model performance (measured by loss/logprobs).
+    between model parameters, training tokens, and language model performance (measured by logprobs).
 
     You should discover scaling laws in the form of mathematical equations that predict
-    the loss based on the number of parameters and training tokens.
+    the logprobs based on the number of parameters and training tokens.
 
     Focus on finding relationships like:
-    - Power laws: Loss ~ A * params^(-α) * tokens^(-β)
-    - Log-linear laws: Loss ~ A + B*log(params) + C*log(tokens)
+    - Power laws: logprobs ~ A * params^(-α) * tokens^(-β)
+    - Log-linear laws: logprobs ~ A + B*log(params) + C*log(tokens)
     - Combined forms or more complex relationships
 
     The data contains:
@@ -25,7 +25,7 @@ prompt:
     - tokens: Number of training tokens
     - log_params: Log of model parameters
     - log_tokens: Log of training tokens
-    - loss: Negative log probability (higher = worse performance)
+    - logprobs: log probability (negative, higher = better performance)
 
     Each group represents a different question, allowing you to find consistent scaling patterns.
 

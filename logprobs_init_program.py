@@ -17,21 +17,17 @@ def scaling_law(X: np.ndarray) -> np.ndarray:
         X: 特征矩阵，形状为 (n_samples, 4)
            - X[:, 0]: params (模型参数量)
            - X[:, 1]: tokens (训练tokens数)
-           - X[:, 2]: log_params (log(模型参数量))
-           - X[:, 3]: log_tokens (log(训练tokens数))
 
     Returns:
-        预测的 loss 值，形状为 (n_samples,)
+        预测的 logprobs 值，形状为 (n_samples,)
     """
 
     # 提取特征
     params = X[:, 0]
     tokens = X[:, 1]
-    log_params = X[:, 2]
-    log_tokens = X[:, 3]
 
     # 简单的 Chinchilla-风格 scaling law
-    # Loss = L_inf + A * params^(-alpha) + B * tokens^(-beta)
+    # logprobs = L_inf + A * params^(-alpha) + B * tokens^(-beta)
 
     # 初始参数（这些会被进化算法优化）
     L_inf = 2.0  # 基础损失
@@ -44,12 +40,12 @@ def scaling_law(X: np.ndarray) -> np.ndarray:
     param_term = A * (params ** (-alpha))
     token_term = B * (tokens ** (-beta))
 
-    loss_pred = L_inf + param_term + token_term
+    logprobs_pred = L_inf + param_term + token_term
 
-    # 确保预测值为正数（损失不能为负）
-    loss_pred = np.maximum(loss_pred, 0.1)
+    # 确保预测值为负数（损失不能为负）
+    logprobs_pred = np.minimum(logprobs_pred, 0)
 
-    return loss_pred
+    return logprobs_pred
 
 
 def fit_and_predict(X_train: np.ndarray, y_train: np.ndarray, X_test: np.ndarray) -> np.ndarray:
@@ -94,10 +90,8 @@ if __name__ == "__main__":
     # 创建一些测试数据
     test_params = np.array([14e6, 160e6, 1e9, 12e9])  # 不同规模的模型
     test_tokens = np.array([300e9, 300e9, 300e9, 300e9])  # 训练tokens
-    test_log_params = np.log(test_params)
-    test_log_tokens = np.log(test_tokens)
 
-    X_test = np.column_stack([test_params, test_tokens, test_log_params, test_log_tokens])
+    X_test = np.column_stack([test_params, test_tokens])
 
     predictions = scaling_law(X_test)
 

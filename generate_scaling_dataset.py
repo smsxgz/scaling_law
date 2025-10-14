@@ -130,7 +130,7 @@ def select_common_questions(all_model_data: Dict[str, List[Dict]],
 
 
 def generate_scaling_dataset(all_model_data: Dict[str, List[Dict]],
-                           selected_questions: List[int]) -> pd.DataFrame:
+                           selected_questions: List[int], output_path: Path) -> pd.DataFrame:
     """
     生成 scaling law 数据集
 
@@ -166,62 +166,22 @@ def generate_scaling_dataset(all_model_data: Dict[str, List[Dict]],
             if correct_logprob is None:
                 continue
 
-            # 转换为 loss (negative log probability)
-            loss = -float(correct_logprob)
-
             # 创建数据行
             row = {
                 'group': group_name,
-                'model_name': model_name,
-                'model_family': model_info['family'],
                 'params': model_info['params'],
                 'tokens': model_info['tokens'],
-                'log_params': np.log(model_info['params']),
-                'log_tokens': np.log(model_info['tokens']),
-                'loss': loss,
-                'question_id': question_id,
-                'question_text': question_data.get('question', ''),
-                'is_correct': question_data.get('is_correct', 0.0)
+                'logprobs': correct_logprob,
             }
             rows.append(row)
 
     df = pd.DataFrame(rows)
     logger.info(f"生成的数据集包含 {len(df)} 行数据，涵盖 {df['group'].nunique()} 个问题组")
 
-    return df
-
-
-def save_for_sld(df: pd.DataFrame, output_path: Path):
-    """
-    保存为 SLD 格式的数据集
-
-    SLD 期望的格式：
-    - 有 group 列用于分组
-    - 特征列：params, tokens, log_params, log_tokens
-    - 目标列：loss
-    """
-    # 创建 SLD 格式的数据
-    sld_df = df[['group', 'params', 'tokens', 'log_params', 'log_tokens', 'loss']].copy()
-
-    # 保存为 CSV
-    sld_df.to_csv(output_path, index=False)
+    df.to_csv(output_path, index=False)
     logger.info(f"数据已保存到 {output_path}")
 
-    # 打印一些统计信息
-    print(f"\n数据集统计信息:")
-    print(f"总行数: {len(sld_df)}")
-    print(f"问题组数: {sld_df['group'].nunique()}")
-    print(f"参数量范围: {sld_df['params'].min():.2e} - {sld_df['params'].max():.2e}")
-    print(f"训练tokens范围: {sld_df['tokens'].min():.2e} - {sld_df['tokens'].max():.2e}")
-    print(f"Loss范围: {sld_df['loss'].min():.4f} - {sld_df['loss'].max():.4f}")
-
-    # 按组显示一些样例
-    print(f"\n前5个问题组的样例数据:")
-    for group in sorted(sld_df['group'].unique())[:5]:
-        group_data = sld_df[sld_df['group'] == group]
-        print(f"\n{group} (共{len(group_data)}个模型):")
-        print(group_data[['params', 'tokens', 'loss']].head())
-
+    return df
 
 def main():
     # 设置随机种子以保证可重现性
@@ -265,10 +225,6 @@ def main():
     if df.empty:
         logger.error("生成的数据集为空")
         return
-
-    # 保存数据集
-    logger.info("保存数据集...")
-    save_for_sld(df, output_path)
 
     # 同时保存包含更多信息的完整数据集
     full_output_path = Path("./logprobs_scaling_dataset_full.csv")
