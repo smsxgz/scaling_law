@@ -220,16 +220,11 @@ def main():
 
     # 生成数据集
     logger.info("生成 scaling law 数据集...")
-    df = generate_scaling_dataset(all_model_data, selected_questions)
+    df = generate_scaling_dataset(all_model_data, selected_questions, output_path)
 
     if df.empty:
         logger.error("生成的数据集为空")
         return
-
-    # 同时保存包含更多信息的完整数据集
-    full_output_path = Path("./logprobs_scaling_dataset_full.csv")
-    df.to_csv(full_output_path, index=False)
-    logger.info(f"完整数据集已保存到 {full_output_path}")
 
     logger.info("数据集生成完成!")
 
