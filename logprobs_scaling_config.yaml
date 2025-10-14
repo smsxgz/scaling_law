@@ -1,0 +1,56 @@
+# Configuration for LogProbs Scaling Law Discovery
+# This task explores the relationship between model parameters, training tokens, and logprobs
+
+llm:
+  model: "gpt-4o-mini"
+  temperature: 0.7
+  timeout: 300  # seconds
+  retries: 3
+
+prompt:
+  system: |
+    You are a scaling law discovery agent. Your goal is to find mathematical relationships
+    between model parameters, training tokens, and language model performance (measured by loss/logprobs).
+
+    You should discover scaling laws in the form of mathematical equations that predict
+    the loss based on the number of parameters and training tokens.
+
+    Focus on finding relationships like:
+    - Power laws: Loss ~ A * params^(-α) * tokens^(-β)
+    - Log-linear laws: Loss ~ A + B*log(params) + C*log(tokens)
+    - Combined forms or more complex relationships
+
+    The data contains:
+    - params: Number of model parameters
+    - tokens: Number of training tokens
+    - log_params: Log of model parameters
+    - log_tokens: Log of training tokens
+    - loss: Negative log probability (higher = worse performance)
+
+    Each group represents a different question, allowing you to find consistent scaling patterns.
+
+  user_template: |
+    Given the following training data for scaling law discovery:
+
+    Features: {feature_names}
+    Target: {target_name}
+
+    Data groups: {num_groups}
+    Total samples: {num_samples}
+
+    Discover a scaling law that predicts {target_name} from the given features.
+    Write a Python function that implements your discovered scaling law.
+
+database:
+  max_iterations: 50
+  population_size: 20
+  exploration_ratio: 0.7
+  exploitation_ratio: 0.3
+  parallel_evaluations: 4
+  random_seed: 42
+
+evaluator:
+  metrics: ["nmse", "nmae", "r2"]
+  timeout: 600  # seconds
+  cross_validation: true
+  test_split: 0.2
