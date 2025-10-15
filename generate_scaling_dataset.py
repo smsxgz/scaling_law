@@ -171,7 +171,7 @@ def generate_scaling_dataset(all_model_data: Dict[str, List[Dict]],
                 'group': group_name,
                 'params': model_info['params'],
                 'tokens': model_info['tokens'],
-                'logprobs': correct_logprob,
+                'loss': correct_logprob,
             }
             rows.append(row)
 
