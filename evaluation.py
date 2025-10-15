@@ -79,7 +79,7 @@ MODELS = {
 EVAL_CONFIG = {
     "tasks": ["mmlu"],
     "num_fewshot": 0,
-    "batch_size": 8,
+    "batch_size": 16,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "output_dir": "./eval_results",
     "log_samples": True,
@@ -105,8 +105,9 @@ def evaluate_model(model_info, output_dir):
         lm = HFLM(
             pretrained=model_name,
             batch_size=EVAL_CONFIG["batch_size"],
-            device=EVAL_CONFIG["device"],
+            # device=EVAL_CONFIG["device"],
             dtype="auto",
+            parallelize=True,
         )
         
         logger.info(f"开始评测...")
