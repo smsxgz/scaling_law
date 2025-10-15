@@ -154,39 +154,40 @@ def extract_logprobs(results, output_dir):
     model_name = results["model_info"]["name"]
     logprob_data = []
 
-    samples_list = results.get("samples", [])
-    if isinstance(samples_list, dict):
-        # MMLU 任务的结果按子任务分组，需要将其展平
-        samples_list = [sample for task_samples in samples_list.values() for sample in task_samples]
+    # MMLU 任务的结果按子任务分组，保留任务名称信息
+    samples_dict = results.get("samples", {})
+    for task_name, task_samples in samples_dict.items():
+        for sample in task_samples:
+            # 1. 获取正确答案的索引 (通常是 'gold' 或 'target' 键)
+            #    这个索引对应于 'choices' 和 'resps' 列表中的位置
+            correct_index = sample.get("gold", sample.get("target"))
 
-    for sample in samples_list:
-        # 1. 获取正确答案的索引 (通常是 'gold' 或 'target' 键)
-        #    这个索引对应于 'choices' 和 'resps' 列表中的位置
-        correct_index = sample.get("gold", sample.get("target"))
+            # 2. 提取所有选项的 logprob 列表
+            logprobs_list = [resp[0][0] for resp in sample.get("resps", []) if resp]
 
-        # 2. 提取所有选项的 logprob 列表
-        logprobs_list = [resp[0][0] for resp in sample.get("resps", []) if resp]
-        
+            # 3. 根据正确答案的索引，从列表中提取对应的 logprob
+            correct_choice_logprob = None
+            # 使用 taskname_docid 格式避免不同子任务的 doc_id 重复
+            combined_doc_id = f"{task_name}_{sample.get("doc_id")}"
 
-        # 3. 根据正确答案的索引，从列表中提取对应的 logprob
-        correct_choice_logprob = None
-        if correct_index is not None and logprobs_list and 0 <= correct_index < len(logprobs_list):
-            correct_choice_logprob = logprobs_list[correct_index]
-        else:
-            logger.debug(f"无法为 doc_id={sample.get('doc_id')} 找到正确选项的 logprob。索引: {correct_index}, logprobs数量: {len(logprobs_list)}")
+            if correct_index is not None and logprobs_list and 0 <= correct_index < len(logprobs_list):
+                correct_choice_logprob = logprobs_list[correct_index]
+            else:
+                logger.debug(f"无法为 doc_id={combined_doc_id} 找到正确选项的 logprob。索引: {correct_index}, logprobs数量: {len(logprobs_list)}")
 
-        choices = sample.get("doc", {}).get("choices", [])
+            choices = sample.get("doc", {}).get("choices", [])
 
-        item = {
-            "doc_id": sample.get("doc_id"),
-            "question": sample.get("doc", {}).get("question", ""),
-            "choices": choices,
-            "gold_index": correct_index,
-            "is_correct": sample.get("acc", False),
-            "correct_choice_logprob": correct_choice_logprob,
-            "all_logprobs": logprobs_list,
-        }
-        logprob_data.append(item)
+            item = {
+                "doc_id": combined_doc_id,
+                "task_name": task_name,
+                "question": sample.get("doc", {}).get("question", ""),
+                "choices": choices,
+                "gold_index": correct_index,
+                "is_correct": sample.get("acc", False),
+                "correct_choice_logprob": correct_choice_logprob,
+                "all_logprobs": logprobs_list,
+            }
+            logprob_data.append(item)
 
     if logprob_data:
         logprob_file = output_dir / f"{model_name.replace('/', '_')}_logprobs.json"
