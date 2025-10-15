@@ -72,6 +72,18 @@ MODELS = {
         {"name": "facebook/opt-30b", "params": 30e9, "tokens": 180e9},
         {"name": "facebook/opt-66b", "params": 66e9, "tokens": 180e9},
     ],
+    "Llama": [
+        {"name": "huggingface/llama-7b", "params": 7e9, "tokens": 1e12},
+        {"name": "huggingface/llama-13b", "params": 13e9, "tokens": 1e12},
+        {"name": "huggingface/llama-33b", "params": 33e9, "tokens": 1.4e12},
+        # {"name": "huggingface/llama-65b", "params": 65e9, "tokens": 1.4e12},
+        {"name": "meta-llama/Llama-2-7b-hf", "params": 7e9, "tokens": 2e12},
+        {"name": "meta-llama/Llama-2-13b-hf", "params": 13e9, "tokens": 2e12},
+        # {"name": "meta-llama/Llama-2-70b-hf", "params": 70e9, "tokens": 2e12},
+        {"name": "meta-llama/Meta-Llama-3-8B", "params": 8e9, "tokens": 15e12},
+        {"name": "meta-llama/Meta-Llama-3.1-8B", "params": 8e9, "tokens": 15e12},
+        # {"name": "meta-llama/Meta-Llama-3.1-70B", "params": 70e9, "tokens": 15e12},
+    ],
 }
 
 
@@ -105,9 +117,9 @@ def evaluate_model(model_info, output_dir):
         lm = HFLM(
             pretrained=model_name,
             batch_size=EVAL_CONFIG["batch_size"],
-            # device=EVAL_CONFIG["device"],
+            device=EVAL_CONFIG["device"],
             dtype="auto",
-            parallelize=True,
+            # parallelize=True,
         )
         
         logger.info(f"开始评测...")
