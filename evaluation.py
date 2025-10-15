@@ -219,12 +219,8 @@ def run_evaluation_suite(model_series="pythia"):
             all_results.append(results)
             extract_logprobs(results, output_dir)
     
-    summary_file = output_dir / "summary.json"
-    safe_json_dump(all_results, summary_file)
-    
     logger.info(f"\n{'='*60}")
     logger.info(f"所有评测完成! 结果保存在: {output_dir}")
-    logger.info(f"汇总文件: {summary_file}")
     logger.info(f"{'='*60}\n")
     
     print("\n模型性能汇总:")
