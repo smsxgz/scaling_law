@@ -20,13 +20,6 @@ from data_loader import load_data
 # --- Task Configuration ---
 # A set of supported task names. The evaluator will infer which one to use.
 SUPPORTED_TASKS = {
-    "sft_scaling_law",
-    "data_constrained_scaling_law",
-    "moe_scaling_law",
-    "vocab_scaling_law",
-    "domain_mixture_scaling_law",
-    "lr_bsz_scaling_law",
-    "parallel_scaling_law",
     "logprobs_scaling_law"
 }
 
@@ -173,49 +166,136 @@ def evaluate_core(
     fitted_params_map: Dict[Any, Any] = None,
 ) -> Dict[str, Union[float, Dict]]:
     """
-    Core evaluation logic: fits a model or evaluates it on test data.
+    Core evaluation logic for the mixed-effects scaling law model.
+    
+    FIT MODE:
+    - Concatenates all training data groups.
+    - Calls fit_scaling_law *once* to get global fixed-effect params.
+    - Stores these params under a single '_global' key.
+    
+    EVALUATE MODE (Model-Agnostic, CALIBRATION-AWARE):
+    - Retrieves the global params.
+    - **Strictly** reads the program's 'CALIBRATION_MODE' ('additive' or 'multiplicative').
+      Fails if the mode is missing or invalid.
+    - For *each test group*:
+        1. Calls `scaling_law_func` to get fixed predictions.
+        2. Estimates the group-specific effect using the specified calibration mode.
+        3. Generates a calibrated prediction and calculates metrics.
     """
     try:
         program = _import_program(program_path)
         fit_scaling_law = program.fit_scaling_law
         scaling_law_func = program.scaling_law_func
+        
+        try:
+            calibration_mode = program.CALIBRATION_MODE
+        except AttributeError:
+            return get_failure_result(
+                f"Program '{program_path}' is missing the required global constant 'CALIBRATION_MODE'."
+            )
+        
+        if calibration_mode not in ['additive', 'multiplicative']:
+                return get_failure_result(
+                    f"Invalid CALIBRATION_MODE: '{calibration_mode}'. Must be 'additive' or 'multiplicative'."
+                )
 
         if not use_test_data:
             # --- FIT on training data ---
-            train_data = load_data(task_name, train=True)
-            if not train_data:
-                return get_failure_result("No training data found.")
+            try:
+                train_data_dict = load_data(task_name, train=True)
+            except FileNotFoundError as e:
+                return get_failure_result(f"Training data not found: {e}")
+            if not train_data_dict:
+                return get_failure_result("Training data is empty or failed to load.")
 
-            new_fitted_params_map = {}
-            for key, (X_train, y_train) in train_data.items():
-                params = run_with_timeout(fit_scaling_law, args=(X_train, y_train))
-                new_fitted_params_map[key] = params
+            all_X_train, all_y_train = [], []
+            for key, (X_group, y_group) in train_data_dict.items():
+                all_X_train.append(np.asarray(X_group))
+                all_y_train.append(np.asarray(y_group))
+            if not all_X_train:
+                 return get_failure_result("Training data contains no groups.")
+
+            X_combined = np.concatenate(all_X_train, axis=0)
+            y_combined = np.concatenate(all_y_train, axis=0)
+
+            global_params = run_with_timeout(fit_scaling_law, args=(X_combined, y_combined))
+            if global_params is None:
+                return get_failure_result("fit_scaling_law returned None.")
+
+            new_fitted_params_map = {'_global': global_params}
             return {"fitted_params": new_fitted_params_map}
 
         else:
-            # --- EVALUATE on test data ---
+            # --- EVALUATE on test data (Calibration-Aware) ---          
+
             if fitted_params_map is None:
                 return get_failure_result("fitted_params_map is required for evaluation.")
+            global_params = fitted_params_map.get('_global')
+            if global_params is None:
+                return get_failure_result("No '_global' parameters found in fitted_params_map.")
 
-            test_data = load_data(task_name, train=False)
-            if not test_data:
-                return get_failure_result("No test data found.")
+            try:
+                test_data_dict = load_data(task_name, train=False)
+            except FileNotFoundError as e:
+                return get_failure_result(f"Test data not found: {e}")
+            if not test_data_dict:
+                 print("Warning: Test data is empty.", file=sys.stderr)
+                 return {"mse": 0.0, "note": "Empty test set."}
 
-            all_predictions, all_true_values = [], []
-            for key, (X_test, y_test) in test_data.items():
-                if key not in fitted_params_map:
-                    print(f"Warning: No params for test group '{key}'. Skipping.", file=sys.stderr)
+            all_calibrated_predictions = []
+            all_true_values = []
+
+            # Use a small epsilon to prevent log(0) or division by zero
+            eps = np.finfo(float).eps
+            
+            for group_key, (X_test_group, y_test_group) in test_data_dict.items():
+                if X_test_group.size == 0 or y_test_group.size == 0:
                     continue
 
-                params = fitted_params_map[key]
-                predictions = run_with_timeout(scaling_law_func, args=(X_test, params))
-                all_predictions.append(np.asarray(predictions))
-                all_true_values.append(np.asarray(y_test))
+                pred_fixed_group = run_with_timeout(scaling_law_func, args=(X_test_group, global_params))
+                if pred_fixed_group is None: continue
+                
+                true_loss_group = y_test_group
+                
+                if calibration_mode == 'multiplicative':
+                    # L_total = L_fixed * K_i
+                    # Estimate K_i using the Geometric Mean of ratios
+                    
+                    # Calculate ratios, ensuring inputs are positive
+                    ratios = (true_loss_group + eps) / (pred_fixed_group + eps)
+                    
+                    # Work in log-space to compute geometric mean
+                    log_ratios = np.log(ratios)
+                    
+                    # This is the log of the geometric mean
+                    mean_log_ratio = np.nanmean(log_ratios)
+                    
+                    if np.isnan(mean_log_ratio) or np.isinf(mean_log_ratio):
+                        estimated_problem_factor = 1.0
+                    else:
+                        # Convert back to linear space
+                        estimated_problem_factor = np.exp(mean_log_ratio)
+                    
+                    pred_calibrated_group = pred_fixed_group * estimated_problem_factor
+                
+                elif calibration_mode == 'additive':
+                    # L_total = L_fixed + C_i
+                    # Estimate C_i using the Arithmetic Mean of residuals
+                    residuals = true_loss_group - pred_fixed_group
+                    estimated_problem_effect = np.nanmean(residuals)
+                    
+                    if np.isnan(estimated_problem_effect) or np.isinf(estimated_problem_effect):
+                        estimated_problem_effect = 0.0
 
-            if not all_predictions:
+                    pred_calibrated_group = pred_fixed_group + estimated_problem_effect
+                
+                all_calibrated_predictions.append(pred_calibrated_group)
+                all_true_values.append(true_loss_group)
+
+            if not all_calibrated_predictions:
                 return get_failure_result("No predictions were generated for the test set.")
 
-            final_predictions = np.concatenate(all_predictions)
+            final_predictions = np.concatenate(all_calibrated_predictions)
             final_true_values = np.concatenate(all_true_values)
 
             return calculate_final_metrics(
