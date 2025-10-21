@@ -1,15 +1,15 @@
 # Configuration for data constrained scaling law discovery with OpenEvolve
-max_iterations: 50
+max_iterations: 100
 checkpoint_interval: 1
 log_level: "INFO"
-random_seed: 42
+random_seed: 123
 
 # LLM configuration
 llm:
   primary_model: gpt-5
-  primary_model_weight: 1.0
-  secondary_model: gpt-5
-  secondary_model_weight: 0.0
+  primary_model_weight: 0.5
+  secondary_model: gemini-2.5-pro
+  secondary_model_weight: 0.5
   api_base: "http://api.llm.wq/v1"
   max_tokens: 16384
   timeout: 240
@@ -29,10 +29,10 @@ prompt:
     **DATA CHARACTERISTICS:**
     - Features: [problem_id, params, tokens] - (N, 3) input array.
     - problem_id: A categorical identifier for each unique MMLU problem.
-    - params (P): Model parameter count (e.g., 1.4e7 to 6.6e10).
-    - tokens (D): Model token count (e.g., 3e11 or 1.8e11).
-    - Labels: loss - scalar output (negative log of the probability).
-    - Dataset size: Large. Consists of $K$ distinct problem_ids and $M$ models, for a total of $N = K \times M$ data points. (e.g., $K=5000$ problems, $M=16$ models).
+    - params (P): Model parameter count (e.g., 1.4e7 to 7e10).
+    - tokens (D): Model token count (e.g., 1.8e11 or 1.5e13).
+    - Labels: loss - scalar output (negative log of the probability, e.g., 0.002 to 9.860).
+    - Dataset size: Large. Consists of K distinct problem_ids and 23 models, for a total of N = 23 K data points. (K=8425 for train and K=2808 for validation).
     - Goal: Model loss as a function of fixed effects [params, tokens] and a random effect (e.g., a random intercept) based on [problem_id].
 
     The function signatures must remain:
@@ -81,7 +81,7 @@ database:
 
 # Evaluator configuration
 evaluator:
-  timeout: 600
+  timeout: 1200
   max_retries: 3
   cascade_evaluation: false
   cascade_thresholds: [0.3, 0.6]

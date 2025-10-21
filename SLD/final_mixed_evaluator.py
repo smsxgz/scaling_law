@@ -202,7 +202,7 @@ def evaluate_core(
         if not use_test_data:
             # --- FIT on training data ---
             try:
-                train_data_dict = load_data(task_name, train=True)
+                train_data_dict = load_data(task_name, train=True, mode="final")
             except FileNotFoundError as e:
                 return get_failure_result(f"Training data not found: {e}")
             if not train_data_dict:
@@ -235,7 +235,7 @@ def evaluate_core(
                 return get_failure_result("No '_global' parameters found in fitted_params_map.")
 
             try:
-                test_data_dict = load_data(task_name, train=False)
+                test_data_dict = load_data(task_name, train=False, mode="final")
             except FileNotFoundError as e:
                 return get_failure_result(f"Test data not found: {e}")
             if not test_data_dict:

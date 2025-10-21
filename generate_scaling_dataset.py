@@ -197,7 +197,9 @@ def generate_scaling_dataset(all_model_data: Dict[str, List[Dict]],
         logger.info(f"为 {output_path} 生成的数据集包含 {len(df)} 行数据，涵盖 {df['group'].nunique()} 个问题组")
         df.to_csv(output_path, index=False)
         logger.info(f"数据已保存到 {output_path}")
-
+    
+    print("max loss", max(df['loss']))
+    print("min loss", min(df['loss']))
     return df
 
 def main():
@@ -207,8 +209,9 @@ def main():
 
     # 路径设置
     eval_results_dir = Path("./eval_results")
-    train_output_path = Path("./logprobs_scaling_train_dataset.csv")
-    test_output_path = Path("./logprobs_scaling_test_dataset.csv")
+    train_output_path = Path("./SLD/logprobs_scaling_train_dataset.csv")
+    validation_output_path = Path("./SLD/logprobs_scaling_validation_dataset.csv")
+    test_output_path = Path("./SLD/logprobs_scaling_test_dataset.csv")
 
     if not eval_results_dir.exists():
         logger.error(f"评估结果目录 {eval_results_dir} 不存在")
@@ -235,24 +238,30 @@ def main():
         logger.error("没有找到符合条件的问题")
         return
 
-    # 按问题 80/20 划分训练集和测试集
-    logger.info(f"总共找到 {len(all_common_questions)} 个通用问题。现在进行 80/20 分割...")
-    
+    # 按问题 60/20/20 划分训练集、验证集和测试集
+    logger.info(f"总共找到 {len(all_common_questions)} 个通用问题。现在进行 60/20/20 分割...")
+
     # 随机打乱问题列表
     random.shuffle(all_common_questions)
 
     # 计算分割点
-    split_index = int(len(all_common_questions) * 0.8)
-    
-    # 分割
-    train_questions = all_common_questions[:split_index]
-    test_questions = all_common_questions[split_index:]
+    train_split = int(len(all_common_questions) * 0.6)
+    val_split = int(len(all_common_questions) * 0.8)
 
-    logger.info(f"训练集问题数: {len(train_questions)}, 测试集问题数: {len(test_questions)}")
+    # 分割
+    train_questions = all_common_questions[:train_split]
+    validation_questions = all_common_questions[train_split:val_split]
+    test_questions = all_common_questions[val_split:]
+
+    logger.info(f"训练集问题数: {len(train_questions)}, 验证集问题数: {len(validation_questions)}, 测试集问题数: {len(test_questions)}")
 
     # 生成训练数据集
     logger.info("生成训练数据集...")
     generate_scaling_dataset(all_model_data, train_questions, train_output_path)
+
+    # 生成验证数据集
+    logger.info("生成验证数据集...")
+    generate_scaling_dataset(all_model_data, validation_questions, validation_output_path)
 
     # 生成测试数据集
     logger.info("生成测试数据集...")
