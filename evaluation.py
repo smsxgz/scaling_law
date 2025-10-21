@@ -3,7 +3,7 @@
 import os
 import json
 import logging
-from datetime import datetime
+import csv
 from pathlib import Path
 import torch
 import numpy as np
@@ -46,111 +46,115 @@ def safe_json_dump(data, file_path):
 
 
 # ==================== 模型配置 ====================
-MODELS = {
-    # Pythia 系列 - 主要研究对象
-    "pythia": [
-        {"name": "EleutherAI/pythia-14m", "params": 14e6, "tokens": 300e9}, # Corrected param count
-        {"name": "EleutherAI/pythia-31m", "params": 31e6, "tokens": 300e9}, # Corrected param count
-        {"name": "EleutherAI/pythia-70m", "params": 70e6, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-160m", "params": 160e6, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-410m", "params": 410e6, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-1b", "params": 1e9, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-1.4b", "params": 1.4e9, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-2.8b", "params": 2.8e9, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-6.9b", "params": 6.9e9, "tokens": 300e9},
-        {"name": "EleutherAI/pythia-12b", "params": 12e9, "tokens": 300e9},
-    ],
-    
-    # OPT 系列
-    "opt": [
-        {"name": "facebook/opt-125m", "params": 125e6, "tokens": 180e9},
-        {"name": "facebook/opt-350m", "params": 350e6, "tokens": 180e9},
-        {"name": "facebook/opt-1.3b", "params": 1.3e9, "tokens": 180e9},
-        {"name": "facebook/opt-2.7b", "params": 2.7e9, "tokens": 180e9},
-        {"name": "facebook/opt-6.7b", "params": 6.7e9, "tokens": 180e9},
-        {"name": "facebook/opt-13b", "params": 13e9, "tokens": 180e9},
-        {"name": "facebook/opt-30b", "params": 30e9, "tokens": 180e9},
-        {"name": "facebook/opt-66b", "params": 66e9, "tokens": 180e9},
-    ],
-    "Llama": [
-        {"name": "huggingface/llama-7b", "params": 7e9, "tokens": 1e12},
-        {"name": "huggingface/llama-13b", "params": 13e9, "tokens": 1e12},
-        {"name": "huggingface/llama-33b", "params": 33e9, "tokens": 1.4e12},
-        # {"name": "huggingface/llama-65b", "params": 65e9, "tokens": 1.4e12},
-        {"name": "meta-llama/Llama-2-7b-hf", "params": 7e9, "tokens": 2e12},
-        {"name": "meta-llama/Llama-2-13b-hf", "params": 13e9, "tokens": 2e12},
-        # {"name": "meta-llama/Llama-2-70b-hf", "params": 70e9, "tokens": 2e12},
-        {"name": "meta-llama/Meta-Llama-3-8B", "params": 8e9, "tokens": 15e12},
-        {"name": "meta-llama/Meta-Llama-3.1-8B", "params": 8e9, "tokens": 15e12},
-        # {"name": "meta-llama/Meta-Llama-3.1-70B", "params": 70e9, "tokens": 15e12},
-    ],
-}
+def parse_tokens(token_str):
+    """解析 tokens 字符串，e.g., '300B' -> 300e9, '2T' -> 2e12"""
+    token_str = str(token_str).strip().upper()
+    multipliers = {
+        'M': 1e6,
+        'B': 1e9,
+        'T': 1e12,
+    }
+    for suffix, multiplier in multipliers.items():
+        if token_str.endswith(suffix):
+            return float(token_str[:-1]) * multiplier
+    return float(token_str)
+
+
+def load_models_from_csv(csv_path="models.csv"):
+    """从 CSV 文件加载模型列表"""
+    models = []
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            if row['model_name'].strip():
+                models.append({
+                    "name": row['model_name'].strip(),
+                    "tokens": parse_tokens(row['tokens'].strip()),
+                })
+    return models
 
 
 # ==================== 评测配置 ====================
 EVAL_CONFIG = {
     "tasks": ["mmlu"],
-    "num_fewshot": 0,
-    "batch_size": 16,
     "device": "cuda" if torch.cuda.is_available() else "cpu",
     "output_dir": "./eval_results",
     "log_samples": True,
 }
 
 
-def setup_output_dir():
-    """创建输出目录"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = Path(EVAL_CONFIG["output_dir"]) / timestamp
+def setup_output_dir(num_fewshot):
+    """创建输出目录：eval_results/{num_fewshot}_shot"""
+    output_dir = Path(EVAL_CONFIG["output_dir"]) / f"{num_fewshot}_shot"
     output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
 
-def evaluate_model(model_info, output_dir):
+def is_model_evaluated(model_name, output_dir):
+    """检查模型是否已经评测过"""
+    model_file = output_dir / f"{model_name.replace('/', '_')}.json"
+    return model_file.exists()
+
+
+def get_completed_models(output_dir):
+    """获取已完成的模型列表"""
+    if not output_dir.exists():
+        return set()
+    return {f.stem for f in output_dir.glob("*.json")}
+
+
+def evaluate_model(model_info, output_dir, batch_size=8, num_fewshot=0):
     """评测单个模型"""
     model_name = model_info["name"]
     logger.info(f"开始评测模型: {model_name}")
-    logger.info(f"参数量: {model_info['params']:.2e}, 训练tokens: {model_info['tokens']:.2e}")
-    
+
     try:
         logger.info(f"加载模型...")
         lm = HFLM(
             pretrained=model_name,
-            batch_size=EVAL_CONFIG["batch_size"],
+            batch_size=batch_size,
             device=EVAL_CONFIG["device"],
             dtype="auto",
             # parallelize=True,
         )
-        
+
+        # 获取参数量
+        params = lm.model.num_parameters()
+        if params is None:
+            logger.error(f"无法获取模型 {model_name} 的参数量，跳过")
+            return None
+
+        logger.info(f"参数量: {params:.2e}, 训练tokens: {model_info['tokens']:.2e}")
+
         logger.info(f"开始评测...")
         results = evaluator.simple_evaluate(
             model=lm,
             tasks=EVAL_CONFIG["tasks"],
-            num_fewshot=EVAL_CONFIG["num_fewshot"],
-            batch_size=EVAL_CONFIG["batch_size"],
+            num_fewshot=num_fewshot,
+            batch_size=batch_size,
             log_samples=EVAL_CONFIG["log_samples"],
         )
-        
+
+        results["model_info"] = {
+            "name": model_name,
+            "params": params,
+            "tokens": model_info["tokens"],
+            "tokens_per_param": model_info["tokens"] / params if params > 0 else 0,
+        }
+
         output_file = output_dir / f"{model_name.replace('/', '_')}.json"
         safe_json_dump(results, output_file)
         logger.info(f"结果已保存到: {output_file}")
-        
-        results["model_info"] = {
-            "name": model_name,
-            "params": model_info["params"],
-            "tokens": model_info["tokens"],
-            "tokens_per_param": model_info["tokens"] / model_info["params"] if model_info["params"] > 0 else 0,
-        }
-        
+
         if "results" in results and "mmlu" in results["results"]:
             acc = results["results"]["mmlu"].get("acc", results["results"]["mmlu"].get("acc,none", 0))
             logger.info(f"完成评测: {model_name}")
             logger.info(f"MMLU准确率: {acc:.4f}")
         else:
             logger.warning(f"未找到 MMLU 准确率指标")
-        
+
         return results
-        
+
     except Exception as e:
         logger.error(f"评测失败 {model_name}: {str(e)}")
         import traceback
@@ -158,85 +162,43 @@ def evaluate_model(model_info, output_dir):
         return None
 
 
-def extract_logprobs(results, output_dir):
-    """从评测结果中提取每个问题的 logprob，特别是正确选项的 logprob"""
-    if not results or "samples" not in results:
-        logger.warning("没有样本数据可以提取 logprobs")
-        return
-
-    model_name = results["model_info"]["name"]
-    logprob_data = []
-
-    # MMLU 任务的结果按子任务分组，保留任务名称信息
-    samples_dict = results.get("samples", {})
-    for task_name, task_samples in samples_dict.items():
-        for sample in task_samples:
-            # 1. 获取正确答案的索引 (通常是 'gold' 或 'target' 键)
-            #    这个索引对应于 'choices' 和 'resps' 列表中的位置
-            correct_index = sample.get("gold", sample.get("target"))
-
-            # 2. 提取所有选项的 logprob 列表
-            logprobs_list = [resp[0][0] for resp in sample.get("resps", []) if resp]
-
-            # 3. 根据正确答案的索引，从列表中提取对应的 logprob
-            correct_choice_logprob = None
-            # 使用 taskname_docid 格式避免不同子任务的 doc_id 重复
-            combined_doc_id = f"{task_name}_{sample.get("doc_id")}"
-
-            if correct_index is not None and logprobs_list and 0 <= correct_index < len(logprobs_list):
-                correct_choice_logprob = logprobs_list[correct_index]
-            else:
-                logger.debug(f"无法为 doc_id={combined_doc_id} 找到正确选项的 logprob。索引: {correct_index}, logprobs数量: {len(logprobs_list)}")
-
-            choices = sample.get("doc", {}).get("choices", [])
-
-            item = {
-                "doc_id": combined_doc_id,
-                "task_name": task_name,
-                "question": sample.get("doc", {}).get("question", ""),
-                "choices": choices,
-                "gold_index": correct_index,
-                "is_correct": sample.get("acc", False),
-                "correct_choice_logprob": correct_choice_logprob,
-                "all_logprobs": logprobs_list,
-            }
-            logprob_data.append(item)
-
-    if logprob_data:
-        logprob_file = output_dir / f"{model_name.replace('/', '_')}_logprobs.json"
-        safe_json_dump(logprob_data, logprob_file)
-        logger.info(f"Logprobs 已保存到: {logprob_file}")
-    else:
-        logger.warning(f"在 {model_name} 的结果中未找到可提取的样本。")
-
-def run_evaluation_suite(model_series="pythia"):
+def run_evaluation_suite(batch_size=8, num_fewshot=0):
     """运行完整的评测套件"""
-    if model_series not in MODELS:
-        logger.error(f"未知的模型系列: {model_series}")
-        logger.info(f"可用的系列: {list(MODELS.keys())}")
+    # 加载模型列表
+    models = load_models_from_csv("models.csv")
+    if not models:
+        logger.error("未能从 models.csv 加载任何模型")
         return
-    
-    output_dir = setup_output_dir()
+
+    output_dir = setup_output_dir(num_fewshot)
     logger.info(f"结果将保存到: {output_dir}")
-    
+
+    # 获取已完成的模型
+    completed_models = get_completed_models(output_dir)
+    logger.info(f"已完成的模型: {len(completed_models)}/{len(models)}")
+    if completed_models:
+        logger.info(f"跳过已完成的模型: {completed_models}")
+
     all_results = []
-    models_to_eval = MODELS[model_series]
-    
+    models_to_eval = [m for m in models if m["name"].replace('/', '_') not in completed_models]
+
+    logger.info(f"待评测模型数: {len(models_to_eval)}")
+
     for i, model_info in enumerate(models_to_eval, 1):
         logger.info(f"\n{'='*60}")
-        logger.info(f"进度: {i}/{len(models_to_eval)}")
+        logger.info(f"进度: {i}/{len(models_to_eval)} (总体: {len(completed_models) + i}/{len(models)})")
         logger.info(f"{'='*60}\n")
-        
-        results = evaluate_model(model_info, output_dir)
-        
+
+        results = evaluate_model(model_info, output_dir, batch_size=batch_size, num_fewshot=num_fewshot)
+
         if results:
             all_results.append(results)
-            extract_logprobs(results, output_dir)
-    
+
     logger.info(f"\n{'='*60}")
     logger.info(f"所有评测完成! 结果保存在: {output_dir}")
     logger.info(f"{'='*60}\n")
-    
+
+    # 汇总结果
     print("\n模型性能汇总:")
     print(f"{'模型名称':<50} {'参数量':<12} {'MMLU准确率':<12}")
     print("-" * 80)
@@ -251,15 +213,11 @@ def run_evaluation_suite(model_series="pythia"):
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="批量评测LLM模型")
-    parser.add_argument("--series", type=str, default="pythia", choices=list(MODELS.keys()), help="要评测的模型系列")
-    parser.add_argument("--batch-size", type=int, default=8, help="批次大小")
+    parser.add_argument("--batch-size", type=int, default=16, help="批次大小")
     parser.add_argument("--num-fewshot", type=int, default=0, help="Few-shot示例数量")
-    
+
     args = parser.parse_args()
-    
-    EVAL_CONFIG["batch_size"] = args.batch_size
-    EVAL_CONFIG["num_fewshot"] = args.num_fewshot
-    
-    run_evaluation_suite(model_series=args.series)
+
+    run_evaluation_suite(batch_size=args.batch_size, num_fewshot=args.num_fewshot)
