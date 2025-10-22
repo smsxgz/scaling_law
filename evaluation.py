@@ -115,7 +115,8 @@ def evaluate_model(model_info, output_dir, batch_size=8, num_fewshot=0):
             batch_size=batch_size,
             device=EVAL_CONFIG["device"],
             dtype="auto",
-            # parallelize=True,
+            # trust_remote_code=True,
+            parallelize=True,
         )
 
         # 获取参数量
@@ -162,12 +163,12 @@ def evaluate_model(model_info, output_dir, batch_size=8, num_fewshot=0):
         return None
 
 
-def run_evaluation_suite(batch_size=8, num_fewshot=0):
+def run_evaluation_suite(batch_size=8, num_fewshot=0, csv_path="models.csv"):
     """运行完整的评测套件"""
     # 加载模型列表
-    models = load_models_from_csv("models.csv")
+    models = load_models_from_csv(csv_path)
     if not models:
-        logger.error("未能从 models.csv 加载任何模型")
+        logger.error(f"未能从 {csv_path} 加载任何模型")
         return
 
     output_dir = setup_output_dir(num_fewshot)
@@ -217,7 +218,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="批量评测LLM模型")
     parser.add_argument("--batch-size", type=int, default=16, help="批次大小")
     parser.add_argument("--num-fewshot", type=int, default=0, help="Few-shot示例数量")
+    parser.add_argument("--csv", type=str, default="models.csv", help="模型列表CSV文件路径")
 
     args = parser.parse_args()
 
-    run_evaluation_suite(batch_size=args.batch_size, num_fewshot=args.num_fewshot)
+    run_evaluation_suite(batch_size=args.batch_size, num_fewshot=args.num_fewshot, csv_path=args.csv)

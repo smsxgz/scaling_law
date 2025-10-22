@@ -6,10 +6,10 @@ random_seed: 123
 
 # LLM configuration
 llm:
-  primary_model: gpt-5
-  primary_model_weight: 0.5
-  secondary_model: gemini-2.5-pro
-  secondary_model_weight: 0.5
+  primary_model: gemini-2.5-pro
+  primary_model_weight: 1.0
+  secondary_model: gpt-5
+  secondary_model_weight: 0.0
   api_base: "http://api.llm.wq/v1"
   max_tokens: 16384
   timeout: 240
@@ -30,9 +30,9 @@ prompt:
     - Features: [problem_id, params, tokens] - (N, 3) input array.
     - problem_id: A categorical identifier for each unique MMLU problem.
     - params (P): Model parameter count (e.g., 1.4e7 to 7e10).
-    - tokens (D): Model token count (e.g., 1.8e11 or 1.5e13).
-    - Labels: loss - scalar output (negative log of the probability, e.g., 0.002 to 9.860).
-    - Dataset size: Large. Consists of K distinct problem_ids and 23 models, for a total of N = 23 K data points. (K=8425 for train and K=2808 for validation).
+    - tokens (D): Model token count (e.g., 1.8e11 or 3.6e13).
+    - Labels: loss - scalar output (negative log of the probability, e.g., 0.0001 to 10.2500).
+    - Dataset size: Large. Consists of K distinct problem_ids and 66 models, for a total of N = 66 K data points. (K=8425 for train and K=2808 for validation).
     - Goal: Model loss as a function of fixed effects [params, tokens] and a random effect (e.g., a random intercept) based on [problem_id].
 
     The function signatures must remain:

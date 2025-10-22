@@ -7,13 +7,12 @@ from typing import Dict, Tuple, List, Union
 TASK_SCHEMA_MAP = {
     "logprobs_mixed_scaling_law": {
         # The feature names *required by the model*.
-        # "group" is the problem_id and is now a feature.
-        "feature_names": ["group", "params", "tokens"],
+        "feature_names": ["problem_id", "params", "tokens"],
         "target_name": "loss",
-        "train_file": "logprobs_scaling_train_dataset.csv",
-        "validation_file": "logprobs_scaling_validation_dataset.csv",
-        "test_file": "logprobs_scaling_test_dataset.csv",
-        "group_column": "group"  # The column to use for grouping
+        "train_file": "scaling_train_dataset.csv",
+        "validation_file": "scaling_validation_dataset.csv",
+        "test_file": "scaling_test_dataset.csv",
+        "group_column": "problem_id"  # The column to use for grouping
     }
 }
 
