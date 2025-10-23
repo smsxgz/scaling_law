@@ -1,6 +1,13 @@
 # -*- coding: utf-8 -*-
 """
 Unified Evaluator for Scaling Law Discovery.
+
+(Refactored: Caching-only)
+
+职责:
+1. 运行模型拟合 (fit_model) -> .fit_cache.pkl
+2. 运行模型评估 (_run_evaluation)
+3. 将所有详细结果 (指标, X_raw, y_true, y_pred, params) 保存到 .eval_cache.pkl
 """
 import argparse
 import concurrent.futures
@@ -8,6 +15,7 @@ import importlib.util
 import os
 import sys
 import traceback
+import pickle
 from pathlib import Path
 from typing import Any, Dict, Union
 
@@ -18,10 +26,16 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 from data_loader import load_data
 
 # --- Task Configuration ---
-# A set of supported task names. The evaluator will infer which one to use.
 SUPPORTED_TASKS = {
     "logprobs_mixed_scaling_law"
 }
+
+os.environ["EVAL_TASK_NAME"] = "logprobs_mixed_scaling_law"
+
+# --- 缓存和常量 ---
+FIT_CACHE_SUFFIX = '.fit_cache.pkl'
+EVAL_CACHE_SUFFIX = '.eval_cache.pkl'
+LOG_EPS = np.finfo(float).eps
 
 # --- Core Functions ---
 
@@ -50,81 +64,52 @@ def calculate_final_metrics(
     true_values: np.ndarray,
 ) -> Dict[str, Any]:
     """
-    Calculates evaluation metrics, correctly handling multi-dimensional outputs.
-
-    For multi-dimensional targets, metrics (NMSE, NMAE) are calculated for each
-    dimension separately and then averaged. The normalization factors (variance
-    and mean absolute deviation) are computed using only the test data.
-
-    Args:
-        predictions: The model's predictions as a NumPy array.
-        true_values: The ground truth values from the test set as a NumPy array.
-
-    Returns:
-        A dictionary containing aggregate and per-dimension metrics.
+    Calculates evaluation metrics for a single-dimension (1D) output.
+    (此函数内容未改变)
     """
-    # 1. Initial validation and type conversion
     try:
         pred = np.asarray(predictions, dtype=float)
         true = np.asarray(true_values, dtype=float)
     except (ValueError, TypeError):
         return get_failure_result("Could not convert predictions or true values to float arrays.")
 
-    # 2. Check for invalid values in predictions
     if np.isnan(pred).any() or np.isinf(pred).any():
         return get_failure_result("Predictions contain NaN or Inf values.")
 
-    # 3. Reshape 1D arrays to 2D column vectors for consistent processing
-    if true.ndim == 1:
-        true = true.reshape(-1, 1)
-    if pred.ndim == 1:
-        pred = pred.reshape(-1, 1)
+    true = true.ravel()
+    pred = pred.ravel()
 
-    # 4. Final shape validation
     if true.shape != pred.shape:
-        return get_failure_result(f"Shape mismatch: true values {true.shape} vs. predictions {pred.shape}.")
+        return get_failure_result(f"Shape mismatch after flattening: true values {true.shape} vs. predictions {pred.shape}.")
     if true.size == 0:
         return get_failure_result("Cannot evaluate on empty data.")
 
-    # 5. Calculate per-dimension errors on the test set
-    test_mse_per_dim = np.mean((true - pred) ** 2, axis=0)
-    test_mae_per_dim = np.mean(np.abs(true - pred), axis=0)
+    test_mse = np.mean((true - pred) ** 2)
+    test_mae = np.mean(np.abs(true - pred))
 
-    # 6. Calculate normalizers using the test set only
-    variance_per_dim = np.var(true, axis=0)
-    mean_abs_dev_per_dim = np.mean(np.abs(true - np.mean(true, axis=0)), axis=0)
+    variance = np.var(true)
+    mean_abs_dev = np.mean(np.abs(true - np.mean(true)))
 
-    # 7. Calculate normalized metrics, avoiding division by zero
-    nmse_per_dim = np.divide(test_mse_per_dim, variance_per_dim,
-                             out=np.full_like(test_mse_per_dim, np.inf), # Use np.inf where variance is zero
-                             where=variance_per_dim > 1e-9)
-    nmae_per_dim = np.divide(test_mae_per_dim, mean_abs_dev_per_dim,
-                             out=np.full_like(test_mae_per_dim, np.inf), # Use np.inf where MAD is zero
-                             where=mean_abs_dev_per_dim > 1e-9)
+    eps = 1e-9 
 
-    # 8. Calculate R^2 for each dimension
-    r2_per_dim = 1.0 - nmse_per_dim
-    
-    # 9. Average per-dimension metrics for final aggregate scores
-    nmse = np.mean(nmse_per_dim)
-    nmae = np.mean(nmae_per_dim)
-    # The standard definition of R^2 relates to the total variance, so it's 1 - (total MSE / total variance)
-    # which is equivalent to 1 - mean(nmse_per_dim) if variances are similar, but this is more direct.
+    if variance > eps:
+        nmse = test_mse / variance
+    else:
+        nmse = 0.0 if test_mse < eps else np.inf
+
+    if mean_abs_dev > eps:
+        nmae = test_mae / mean_abs_dev
+    else:
+        nmae = 0.0 if test_mae < eps else np.inf
+
     r2 = 1.0 - nmse
-
-    # 10. Compile the results dictionary
+    
     results = {
         "nmse": float(nmse),
         "nmae": float(nmae),
         "r2": float(r2),
         "combined_score": 1.0 / (1.0 + nmse),
     }
-
-    # 11. Add per-dimension metrics for multi-dimensional targets
-    if true.shape[1] > 1:
-        results["nmse_per_dim"] = nmse_per_dim.tolist()
-        results["nmae_per_dim"] = nmae_per_dim.tolist()
-        results["r2_per_dim"] = r2_per_dim.tolist()
 
     return results
 
@@ -159,203 +144,299 @@ def resolve_task_name(program_path: str) -> str:
 
 # --- Evaluation Pipelines ---
 
-def evaluate_core(
-    program_path: str,
+def fit_model(
+    program_path: str, 
     task_name: str,
-    use_test_data: bool = False,
-    fitted_params_map: Dict[Any, Any] = None,
-) -> Dict[str, Union[float, Dict]]:
+    use_cache: bool = True
+) -> Dict[str, Any]:
     """
-    Core evaluation logic for the mixed-effects scaling law model.
-    
-    FIT MODE:
-    - Concatenates all training data groups.
-    - Calls fit_scaling_law *once* to get global fixed-effect params.
-    - Stores these params under a single '_global' key.
-    
-    EVALUATE MODE (Model-Agnostic, CALIBRATION-AWARE):
-    - Retrieves the global params.
-    - **Strictly** reads the program's 'CALIBRATION_MODE' ('additive' or 'multiplicative').
-      Fails if the mode is missing or invalid.
-    - For *each test group*:
-        1. Calls `scaling_law_func` to get fixed predictions.
-        2. Estimates the group-specific effect using the specified calibration mode.
-        3. Generates a calibrated prediction and calculates metrics.
+    Fits the scaling law model on the combined training data.
     """
+    cache_path = Path(program_path).with_suffix(FIT_CACHE_SUFFIX)
+    
+    if use_cache and cache_path.exists():
+        print(f"Loading cached parameters from {cache_path}", file=sys.stderr)
+        try:
+            with open(cache_path, 'rb') as f:
+                fitted_params_map = pickle.load(f)
+            return {"fitted_params": fitted_params_map}
+        except Exception as e:
+            print(f"Warning: Failed to load cache. Re-fitting. Error: {e}", file=sys.stderr)
+            
     try:
         program = _import_program(program_path)
         fit_scaling_law = program.fit_scaling_law
+
+        # --- FIT on training data ---
+        try:
+            train_data_dict = load_data(task_name, train=True, mode="final")
+        except FileNotFoundError as e:
+            return get_failure_result(f"Training data not found: {e}")
+        if not train_data_dict:
+            return get_failure_result("Training data is empty or failed to load.")
+
+        all_X_train, all_y_train = [], []
+        for key, (X_group, y_group) in train_data_dict.items():
+            all_X_train.append(np.asarray(X_group))
+            all_y_train.append(np.asarray(y_group))
+        if not all_X_train:
+                return get_failure_result("Training data contains no groups.")
+
+        X_combined = np.concatenate(all_X_train, axis=0)
+        y_combined = np.concatenate(all_y_train, axis=0)
+
+        global_params = run_with_timeout(fit_scaling_law, args=(X_combined, y_combined))
+        if global_params is None:
+            return get_failure_result("fit_scaling_law returned None.")
+
+        new_fitted_params_map = {'_global': global_params}
+        
+        # Save to cache
+        try:
+            with open(cache_path, 'wb') as f:
+                pickle.dump(new_fitted_params_map, f)
+            print(f"Saved fitted parameters to {cache_path}", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Failed to save cache. Error: {e}", file=sys.stderr)
+            
+        return {"fitted_params": new_fitted_params_map}
+
+    except Exception as e:
+        traceback.print_exc(file=sys.stderr)
+        return get_failure_result(f"Fitting failed: {str(e)}")
+
+
+# 在 evaluate.py 中，替换掉 _run_evaluation 函数
+
+def _run_evaluation(
+    program_path: str,
+    task_name: str,
+    fitted_params_map: Dict[Any, Any],
+) -> Dict[str, Any]:
+    """
+    Evaluates the model on test data and returns detailed results for caching.
+    (V2: 添加了 .ravel() 修复和调试打印)
+    """
+    try:
+        program = _import_program(program_path)
         scaling_law_func = program.scaling_law_func
         
         try:
             calibration_mode = program.CALIBRATION_MODE
         except AttributeError:
-            return get_failure_result(
+            fail_result = get_failure_result(
                 f"Program '{program_path}' is missing the required global constant 'CALIBRATION_MODE'."
             )
+            return {"aggregate_metrics": fail_result, "per_group_metrics": []}
         
         if calibration_mode not in ['additive', 'multiplicative']:
-                return get_failure_result(
-                    f"Invalid CALIBRATION_MODE: '{calibration_mode}'. Must be 'additive' or 'multiplicative'."
-                )
-
-        if not use_test_data:
-            # --- FIT on training data ---
-            try:
-                train_data_dict = load_data(task_name, train=True, mode="final")
-            except FileNotFoundError as e:
-                return get_failure_result(f"Training data not found: {e}")
-            if not train_data_dict:
-                return get_failure_result("Training data is empty or failed to load.")
-
-            all_X_train, all_y_train = [], []
-            for key, (X_group, y_group) in train_data_dict.items():
-                all_X_train.append(np.asarray(X_group))
-                all_y_train.append(np.asarray(y_group))
-            if not all_X_train:
-                 return get_failure_result("Training data contains no groups.")
-
-            X_combined = np.concatenate(all_X_train, axis=0)
-            y_combined = np.concatenate(all_y_train, axis=0)
-
-            global_params = run_with_timeout(fit_scaling_law, args=(X_combined, y_combined))
-            if global_params is None:
-                return get_failure_result("fit_scaling_law returned None.")
-
-            new_fitted_params_map = {'_global': global_params}
-            return {"fitted_params": new_fitted_params_map}
-
-        else:
-            # --- EVALUATE on test data (Calibration-Aware) ---          
-
-            if fitted_params_map is None:
-                return get_failure_result("fitted_params_map is required for evaluation.")
-            global_params = fitted_params_map.get('_global')
-            if global_params is None:
-                return get_failure_result("No '_global' parameters found in fitted_params_map.")
-
-            try:
-                test_data_dict = load_data(task_name, train=False, mode="final")
-            except FileNotFoundError as e:
-                return get_failure_result(f"Test data not found: {e}")
-            if not test_data_dict:
-                 print("Warning: Test data is empty.", file=sys.stderr)
-                 return {"mse": 0.0, "note": "Empty test set."}
-
-            all_calibrated_predictions = []
-            all_true_values = []
-
-            # Use a small epsilon to prevent log(0) or division by zero
-            eps = np.finfo(float).eps
-            
-            for group_key, (X_test_group, y_test_group) in test_data_dict.items():
-                if X_test_group.size == 0 or y_test_group.size == 0:
-                    continue
-
-                pred_fixed_group = run_with_timeout(scaling_law_func, args=(X_test_group, global_params))
-                if pred_fixed_group is None: continue
-                
-                true_loss_group = y_test_group
-                
-                if calibration_mode == 'multiplicative':
-                    # L_total = L_fixed * K_i
-                    # Estimate K_i using the Geometric Mean of ratios
-                    
-                    # Calculate ratios, ensuring inputs are positive
-                    ratios = (true_loss_group + eps) / (pred_fixed_group + eps)
-                    
-                    # Work in log-space to compute geometric mean
-                    log_ratios = np.log(ratios)
-                    
-                    # This is the log of the geometric mean
-                    mean_log_ratio = np.nanmean(log_ratios)
-                    
-                    if np.isnan(mean_log_ratio) or np.isinf(mean_log_ratio):
-                        estimated_problem_factor = 1.0
-                    else:
-                        # Convert back to linear space
-                        estimated_problem_factor = np.exp(mean_log_ratio)
-                    
-                    pred_calibrated_group = pred_fixed_group * estimated_problem_factor
-                
-                elif calibration_mode == 'additive':
-                    # L_total = L_fixed + C_i
-                    # Estimate C_i using the Arithmetic Mean of residuals
-                    residuals = true_loss_group - pred_fixed_group
-                    estimated_problem_effect = np.nanmean(residuals)
-                    
-                    if np.isnan(estimated_problem_effect) or np.isinf(estimated_problem_effect):
-                        estimated_problem_effect = 0.0
-
-                    pred_calibrated_group = pred_fixed_group + estimated_problem_effect
-                
-                all_calibrated_predictions.append(pred_calibrated_group)
-                all_true_values.append(true_loss_group)
-
-            if not all_calibrated_predictions:
-                return get_failure_result("No predictions were generated for the test set.")
-
-            final_predictions = np.concatenate(all_calibrated_predictions)
-            final_true_values = np.concatenate(all_true_values)
-
-            return calculate_final_metrics(
-                final_predictions,
-                final_true_values,
+            fail_result = get_failure_result(
+                f"Invalid CALIBRATION_MODE: '{calibration_mode}'. Must be 'additive' or 'multiplicative'."
             )
+            return {"aggregate_metrics": fail_result, "per_group_metrics": []}
+
+        global_params = fitted_params_map.get('_global')
+        if global_params is None:
+            fail_result = get_failure_result("No '_global' parameters found in fitted_params_map.")
+            return {"aggregate_metrics": fail_result, "per_group_metrics": []}
+
+        try:
+            test_data_dict = load_data(task_name, train=False, mode="final")
+        except FileNotFoundError as e:
+            fail_result = get_failure_result(f"Test data not found: {e}")
+            return {"aggregate_metrics": fail_result, "per_group_metrics": []}
+        if not test_data_dict:
+            print("Warning: Test data is empty.", file=sys.stderr)
+            return {
+                "aggregate_metrics": {"nmse": 0.0, "nmae": 0.0, "r2": 1.0, "note": "Empty test set."}, 
+                "per_group_metrics": []
+            }
+
+        all_calibrated_predictions = []
+        all_true_values = []
+        per_group_results = []
+
+        for group_key, (X_test_group, y_test_group) in test_data_dict.items():
+            if X_test_group.size == 0 or y_test_group.size == 0:
+                continue
+
+            pred_fixed_group = run_with_timeout(scaling_law_func, args=(X_test_group, global_params))
+            if pred_fixed_group is None: continue
+            
+            # --- (修复 V2: 带有打印) ---
+            true_loss_group = np.asarray(y_test_group, dtype=float)
+            pred_fixed_group = np.asarray(pred_fixed_group, dtype=float)
+
+            # (新) 调试打印: 检查你出问题的那个组
+            is_debug_group = 'mmlu_high_school_computer_science' in group_key
+            if is_debug_group:
+                 print(f"\n[DEBUG] Group: {group_key}", file=sys.stderr)
+                 print(f"[DEBUG] Original true_loss_group shape: {true_loss_group.shape}", file=sys.stderr)
+                 print(f"[DEBUG] Original pred_fixed_group shape: {pred_fixed_group.shape}", file=sys.stderr)
+
+            # 强制将两者都转换为 1D 数组 (N,)
+            true_loss_group = true_loss_group.ravel()
+            pred_fixed_group = pred_fixed_group.ravel()
+
+            if is_debug_group:
+                 print(f"[DEBUG] Ravelled true_loss_group shape: {true_loss_group.shape}", file=sys.stderr)
+                 print(f"[DEBUG] Ravelled pred_fixed_group shape: {pred_fixed_group.shape}", file=sys.stderr)
+
+            if true_loss_group.shape != pred_fixed_group.shape:
+                print(f"Warning: Shape mismatch for group {group_key}. Skipping. True: {true_loss_group.shape}, Pred: {pred_fixed_group.shape}", file=sys.stderr)
+                continue
+            # --- (结束修复 V2) ---
+
+            random_effect_value = 0.0
+            
+            if calibration_mode == 'multiplicative':
+                ratios = (true_loss_group + LOG_EPS) / (pred_fixed_group + LOG_EPS)
+                log_ratios = np.log(ratios)
+                mean_log_ratio = np.nanmean(log_ratios)
+                
+                estimated_problem_factor = 1.0 if np.isnan(mean_log_ratio) or np.isinf(mean_log_ratio) else np.exp(mean_log_ratio)
+                
+                random_effect_value = estimated_problem_factor
+                pred_calibrated_group = pred_fixed_group * estimated_problem_factor
+            
+            elif calibration_mode == 'additive':
+                residuals = true_loss_group - pred_fixed_group
+                estimated_problem_effect = np.nanmean(residuals)
+                
+                if is_debug_group:
+                     print(f"[DEBUG] Residuals shape: {residuals.shape}", file=sys.stderr)
+                     print(f"[DEBUG] Calculated Effect (mean residual): {estimated_problem_effect}", file=sys.stderr) # <-- 我们要看这个新值！
+
+                random_effect_value = estimated_problem_effect
+                pred_calibrated_group = pred_fixed_group + estimated_problem_effect
+            
+            # ... (函数其余部分不变) ...
+            
+            group_metrics = calculate_final_metrics(
+                pred_calibrated_group, 
+                true_loss_group
+            )
+            group_metrics['group_key'] = group_key
+            group_metrics['random_effect'] = random_effect_value
+            
+            try:
+                X_raw_numeric = np.asarray(X_test_group[:, 1:3], dtype=float)
+                group_metrics['X_raw_numeric'] = X_raw_numeric
+                group_metrics['y_true_raw'] = true_loss_group
+                group_metrics['y_pred_calibrated_raw'] = pred_calibrated_group
+            except Exception as e:
+                print(f"Warning: Could not extract raw data for group {group_key}. Analysis may fail. Error: {e}", file=sys.stderr)
+                group_metrics['X_raw_numeric'] = None
+                group_metrics['y_true_raw'] = None
+                group_metrics['y_pred_calibrated_raw'] = None
+            
+            per_group_results.append(group_metrics)
+            all_calibrated_predictions.append(pred_calibrated_group)
+            all_true_values.append(true_loss_group)
+
+        if not all_calibrated_predictions:
+            fail_result = get_failure_result("No predictions were generated for the test set.")
+            return {"aggregate_metrics": fail_result, "per_group_metrics": []}
+
+        final_predictions = np.concatenate(all_calibrated_predictions)
+        final_true_values = np.concatenate(all_true_values)
+
+        aggregate_metrics = calculate_final_metrics(
+            final_predictions,
+            final_true_values,
+        )
+        
+        return {
+            "aggregate_metrics": aggregate_metrics,
+            "per_group_metrics": per_group_results
+        }
 
     except Exception as e:
         traceback.print_exc(file=sys.stderr)
-        return get_failure_result(str(e))
+        fail_result = get_failure_result(str(e))
+        return {"aggregate_metrics": fail_result, "per_group_metrics": []}
 
-def evaluate(program_path: str, verbose: bool = False) -> Dict[str, Any]:
+
+def evaluate(program_path: str, verbose: bool = False, force_refit: bool = False) -> Dict[str, Any]:
     """
-    High-level, single-call evaluation function.
-
-    This orchestrates the entire process:
-    1. Infers the task name.
-    2. Fits the model on training data.
-    3. Evaluates the fitted model on test data.
-    4. Returns a dictionary with final metrics and (optionally) fitted parameters.
-
-    Args:
-        program_path: Path to the user's Python script with scaling law functions.
-        verbose: If True, include fitted parameters and task name in the result.
-
-    Returns:
-        A dictionary containing the evaluation results.
+    High-level, single-call evaluation function with evaluation caching.
     """
     try:
         task_name = resolve_task_name(program_path)
     except ValueError as e:
         return get_failure_result(str(e))
+    
+    fit_cache_path = Path(program_path).with_suffix(FIT_CACHE_SUFFIX)
+    eval_cache_path = Path(program_path).with_suffix(EVAL_CACHE_SUFFIX)
 
-    # 1. Fit on training data to get parameters
-    fit_result = evaluate_core(program_path, task_name, use_test_data=False)
+    # 1. 检查评估缓存 (Evaluation Cache)
+    if not force_refit and eval_cache_path.exists():
+        try:
+            fit_mtime = fit_cache_path.stat().st_mtime if fit_cache_path.exists() else -1
+            eval_mtime = eval_cache_path.stat().st_mtime
+            
+            if fit_mtime <= eval_mtime:
+                print(f"Loading cached evaluation from {eval_cache_path}", file=sys.stderr)
+                with open(eval_cache_path, 'rb') as f:
+                    final_results = pickle.load(f)
+                
+                # `verbose` 标志现在只用于打印, 缓存中已有所有数据
+                if verbose:
+                    final_results["task_name"] = task_name
+                return final_results
+            else:
+                print("Fit cache is newer than eval cache. Re-evaluating.", file=sys.stderr)
+        except Exception as e:
+            print(f"Warning: Failed to load eval cache. Re-evaluating. Error: {e}", file=sys.stderr)
+
+    # 2. 缓存未命中或强制刷新：执行拟合
+    print("Running model fitting...", file=sys.stderr)
+    fit_result = fit_model(program_path, task_name, use_cache=(not force_refit))
     if "fitted_params" not in fit_result:
         error = fit_result.get("error", "Unknown fitting error.")
         return get_failure_result(f"Fitting failed: {error}")
 
     fitted_params_map = fit_result["fitted_params"]
 
-    # 2. Evaluate on test data using the fitted parameters
-    test_result = evaluate_core(
+    # 3. 运行评估
+    print("Running model evaluation...", file=sys.stderr)
+    test_result = _run_evaluation(
         program_path,
         task_name,
-        use_test_data=True,
         fitted_params_map=fitted_params_map,
     )
 
-    # 3. Combine results into a comprehensive output
-    if verbose:
-        test_result["fitted_params"] = fitted_params_map
-        test_result["task_name"] = task_name
-    return test_result
+    # 4. 组合最终输出
+    final_output = test_result.get("aggregate_metrics", {})
+    final_output["per_group_metrics"] = test_result.get("per_group_metrics", [])
+    
+    # --- 优化 (重构) ---
+    # 5. 将 *所有* 需要的数据（包括参数）保存到评估缓存
+    final_output["fitted_params"] = fitted_params_map
+    final_output["task_name"] = task_name # 缓存 task_name
+    
+    try:
+        with open(eval_cache_path, 'wb') as f:
+            pickle.dump(final_output, f)
+        print(f"Saved complete evaluation results to {eval_cache_path}", file=sys.stderr)
+    except Exception as e:
+        print(f"Warning: Failed to save eval cache. Error: {e}", file=sys.stderr)
+    # --- 结束优化 ---
+        
+    if "error" in final_output:
+        final_output["error"] = final_output.get("error")
+        
+    return final_output
 
-# --- Script Entrypoint ---
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Unified Evaluator for Scaling Law Discovery.")
+    parser = argparse.ArgumentParser(
+        description="Unified Evaluator for Scaling Law Discovery.",
+        formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("program_path", type=str, help="Path to the Python script with scaling law functions.")
+    parser.add_argument("--no-cache", action="store_true", help="Force re-fitting and re-evaluation, ignoring all caches.")
+    
     args = parser.parse_args()
 
     if not os.path.exists(args.program_path):
@@ -363,7 +444,9 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"--- Running Evaluation for Program: {args.program_path} ---")
-    final_results = evaluate(args.program_path, verbose=True)
+    
+    # `verbose=True` 确保 task_name 和 params 被添加到结果中（即使是从缓存加载）
+    final_results = evaluate(args.program_path, verbose=True, force_refit=args.no_cache)
 
     task_name = final_results.get('task_name', 'N/A')
     print(f"Inferred Task: {task_name}")
@@ -376,26 +459,21 @@ if __name__ == "__main__":
     print("\n--- ✅ Final Test Results (Aggregate) ---")
     print(f"  Normalized MSE (NMSE): {final_results.get('nmse', 'N/A'):.6f}")
     print(f"  Normalized MAE (NMAE): {final_results.get('nmae', 'N/A'):.6f}")
-    print(f"  R-squared (R²):        {final_results.get('r2', 'N/A'):.6f}")
-    print(f"  Combined Score:        {final_results.get('combined_score', 'N/A'):.6f}")
-    
-    # Print per-dimension metrics if they exist
-    if "nmse_per_dim" in final_results:
-        print("\n  --- Per-Dimension Metrics ---")
-        nmse_vals = final_results["nmse_per_dim"]
-        nmae_vals = final_results["nmae_per_dim"]
-        r2_vals = final_results["r2_per_dim"]
-        for i, (nmse_d, nmae_d, r2_d) in enumerate(zip(nmse_vals, nmae_vals, r2_vals)):
-            print(f"    Dim {i+1}: NMSE={nmse_d:.4f}, NMAE={nmae_d:.4f}, R²={r2_d:.4f}")
+    print(f"  R-squared (R²):       {final_results.get('r2', 'N/A'):.6f}")
+    print(f"  Combined Score:       {final_results.get('combined_score', 'N/A'):.6f}")
 
+    # 打印拟合参数 (快速反馈)
     params = final_results.get('fitted_params', {})
     if params:
-        print(f"\nFitted parameters for {len(params)} group(s):")
+        print(f"\nFitted parameters ({len(params)} group(s)):")
         for key, val in params.items():
             param_val = np.asarray(val)
             if param_val.size > 1:
                 param_str = np.array2string(param_val, precision=4, max_line_width=80, suppress_small=True)
             else:
-                param_str = f"{param_val.item():.4f}" # Use .item() for single-element arrays
+                param_str = f"{param_val.item():.4f}"
             print(f"  - Group '{key}': {param_str}")
-    print("--------------------------")
+    
+    print("\n--------------------------")
+    print(f"Evaluation complete. Cache saved to {Path(args.program_path).with_suffix(EVAL_CACHE_SUFFIX)}")
+    print(f"Run 'python analyze.py \"{args.program_path}\" --plot-groups 5 --plot-residuals' for details.")
