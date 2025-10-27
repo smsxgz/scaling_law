@@ -1,0 +1,87 @@
+# Configuration for data constrained scaling law discovery with OpenEvolve
+max_iterations: 100
+checkpoint_interval: 10
+log_level: "INFO"
+random_seed: 1234
+
+# LLM configuration
+llm:
+  primary_model: gemini-2.5-pro
+  primary_model_weight: 0.5
+  secondary_model: gpt-5
+  secondary_model_weight: 0.5
+  api_base: "http://api.llm.wq/v1"
+  max_tokens: 16384
+  timeout: 240
+  retries: 10
+  retry_delay: 20
+
+# Prompt configuration
+prompt:
+  system_message: |
+    You are an expert in scaling laws and machine learning who specializes in discovering and improving scaling law functions for different LLM training scenarios.
+    Your task is to evolve both the `scaling_law_func` function (currently a naive power law) and the `fit_scaling_law` optimization algorithm (currently a naive BFGS) to best model the relationship between training data characteristics and pre-standardized model logprobs (logprob_zscore). 
+
+    **IMPORTANT: The `scaling_law_func` must use no more than 6 hyperparameters (e.g., A, B, \alpha, \beta, L_\infty).** 
+
+    Focus on mathematical accuracy across different data scales, cross-dataset generalization, parameter efficiency, and numerical/theoretical stability.
+
+    **DATA CHARACTERISTICS:**
+    - Features: [params, tokens] - (N, 2) input array.
+    - params (P): Model parameter count (e.g., 1.4e7 to 1.8e11).
+    - tokens (T): Model token count (e.g., 1.8e11 or 3.6e13).
+    - **Labels: logprob_zscore** - scalar output (standardized log of the probability, e.g., -5.65 to 2.86).
+    - Dataset size: Large. Consists of K distinct problem_ids and 83 models, for a total of N = 83 K data points. (K=8425 for train and K=2808 for validation).
+    - **Goal: Model the standardized logprob (logprob_zscore) as a function of [params, tokens].**
+
+    The function signatures must remain:
+
+    ```python
+    def scaling_law_func(data_points, hyperparams):
+        # data_points: (N,2) array with columns [params, tokens]
+        # params: Array of parameter counts
+        # tokens: Array of token counts
+        # hyperparams: Array of up to 6 hyperparameters
+        # Returns: Predicted logprob_zscore values
+
+    def fit_scaling_law(data_points, logprob_zscore_values):
+        # data_points: (N,2) array with columns [params, tokens]
+        # params: Array of parameter counts
+        # tokens: Array of token counts
+        # logprob_zscore_values: Array of corresponding logprob_zscore values
+        # Returns: Optimized hyperparameters (up to 6 hyperparameters)
+    ```
+    
+    Write all improvements between # EVOLVE-BLOCK-START and # EVOLVE-BLOCK-END markers.
+
+    You are not allowed to use input-dependent feature in scaling_law_func, e.g., median / min / max / etc.
+
+  num_top_programs: 3
+  num_diverse_programs: 2
+  use_template_stochasticity: true
+
+# Database configuration for evolution
+database:
+  population_size: 100
+  archive_size: 50
+  num_islands: 5
+  migration_interval: 25
+  migration_rate: 0.1
+  elite_selection_ratio: 0.1
+  exploration_ratio: 0.2
+  exploitation_ratio: 0.7
+  feature_dimensions: ["combined_score", "complexity", "diversity"]
+  feature_bins: 10
+
+# Evaluator configuration
+evaluator:
+  timeout: 1200
+  max_retries: 3
+  cascade_evaluation: false
+  cascade_thresholds: [0.3, 0.6]
+  parallel_evaluations: 4
+  use_llm_feedback: false
+
+# Evolution settings
+diff_based_evolution: false
+max_code_length: 100000
