@@ -1,0 +1,15 @@
+[project]
+name = "Logprobs_Scaling_Law"
+version = "0.0.1"
+description = "Logprobs Scaling Law"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "datasets>=4.0.0",
+    "matplotlib>=3.10.5",
+    "openevolve>=0.2.15",
+    "pandas>=2.3.1",
+    "scikit-learn>=1.7.1",
+    "scipy>=1.16.1",
+    "statsmodels>=0.14.5",
+]
