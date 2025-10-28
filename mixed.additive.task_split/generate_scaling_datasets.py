@@ -151,7 +151,6 @@ def save_and_log(df: pd.DataFrame, columns: List[str], output_path: Path):
     logger.info(f"  - 总行数: {len(final_df)}")
     logger.info(f"  - 问题数: {final_df['problem_id'].nunique()}")
     logger.info(f"  - 任务数: {final_df['task_name'].nunique()}")
-    logger.info(f"  - 模型数: {final_df['model_name'].nunique()}")
     logger.info(f"  - Logprob 范围: [{final_df['logprob'].min():.4f}, {final_df['logprob'].max():.4f}]")
 
     # 保存数据
