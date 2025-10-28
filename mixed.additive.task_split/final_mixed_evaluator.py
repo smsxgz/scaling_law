@@ -62,9 +62,9 @@ def _fit_global_model(program_path: str, use_cache: bool = True) -> Dict[str, An
             return get_failure_result("Training data is empty or failed to load.")
 
         all_X_train, all_y_train = [], []
-        for task_name, (X_group, y_group) in train_data_dict.items():
-            all_X_train.append(np.asarray(X_group))
-            all_y_train.append(np.asarray(y_group))
+        for task_name, task_data in train_data_dict.items():
+            all_X_train.append(np.asarray(task_data["X"]))
+            all_y_train.append(np.asarray(task_data["y"]))
             
         if not all_X_train:
                 return get_failure_result("Training data contains no groups.")
