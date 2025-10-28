@@ -1,0 +1,102 @@
+# Configuration for data constrained scaling law discovery with OpenEvolve
+max_iterations: 200
+checkpoint_interval: 10
+log_level: "INFO"
+random_seed: 1234
+
+# LLM configuration
+llm:
+  primary_model: gpt-5
+  primary_model_weight: 0.5
+  secondary_model: gemini-2.5-pro
+  secondary_model_weight: 0.5
+  api_base: "http://api.llm.wq/v1"
+  max_tokens: 16384
+  timeout: 240
+  retries: 10
+  retry_delay: 20
+
+# Prompt configuration
+prompt:
+  system_message: |
+    You are an expert in scaling laws and machine learning who specializes in discovering and improving scaling law functions for different LLM training scenarios, with a focus on mixed-effects modeling.
+    Your task is to evolve both the `scaling_law_func` function (which will represent the fixed-effect part of the model) and the `fit_scaling_law` optimization algorithm (which must fit a full mixed-effects model) to better model the relationship between training data characteristics and model loss (negative logprobs). The model must account for variance across different tasks (e.g., different MMLU problems).
+
+    **IMPORTANT:** The fixed-effect scaling law function (`scaling_law_func`) must use no more than 6 parameters (e.g., A, B, \alpha, \beta, C). **It must NOT model a global intercept (e.g., L_inf), as this global constant will be captured by the per-problem random effects.** The `fit_scaling_law` function will need to fit these 6 (or fewer) fixed-effect parameters plus all the per-problem random-effect parameters, but it should **only return the fixed-effect parameters.**
+
+    Focus on mathematical accuracy, cross-dataset generalization, parameter efficiency (for the fixed effects), numerical/theoretical stability, and robust estimation of fixed effects despite high variance from random effects.
+
+    **DATA CHARACTERISTICS:**
+    - Features: [problem_id, params, tokens] - (N, 3) input array.
+    - problem_id: A categorical identifier for each unique MMLU problem (e.g., mmlu_security_studies_97)
+    - params (P): Model parameter count (e.g., 1.4e7 to 7e10).
+    - tokens (D): Model token count (e.g., 1.8e11 or 3.6e13).
+    - Labels: loss - scalar output (negative log of the probability, e.g., 0.0001 to 10.2500).
+    - Dataset size: Large. Consists of K distinct problem_ids and 66 models, for a total of N = 66 K data points. (K=8425 for train and K=2808 for validation).
+
+    **GOAL**: Model loss using a specific additive mixed-effects model structure:
+    `loss_ij = f(params_i, tokens_i; \theta) + u_j`
+    Where:
+     - 'j' indexes the group (the `problem_id`).
+     - 'i' indexes the observation within that group (the specific LLM).
+     - 'loss_ij' is the observed loss of LLM 'i' on problem 'j'.
+     - 'f(...)' is the fixed-effect scaling law (the function you must evolve).
+     - '\theta' represents the vector of up to 6 fixed-effect parameters (e.g., A, a, B, b) that 'f' uses.
+     - '`params_i`' and '`tokens_i`' are the properties of LLM 'i'.
+     - '`u_j`' is the random intercept for problem 'j', capturing its unique, intrinsic difficulty.
+    Crucially, the fixed-effect function 'f(...)' MUST NOT contain a global constant intercept (L_inf). This global intercept is to be fully absorbed into the per-problem random effects u_j.
+
+    The function signatures must remain:
+
+    ```python
+    def scaling_law_func(data_points, hyperparams):
+        # data_points: (N,3) array with columns [problem_id, params, tokens]
+        # params: Array of parameter counts (corresponds to 'params_i' in the formula)
+        # tokens: Array of token counts (corresponds to 'tokens_i' in the formula)
+        # hyperparams: Array of up to 6 FIXED-EFFECT parameters ('\theta' in the formula)
+        # Returns: Predicted loss contribution from the FIXED-EFFECTS ONLY.
+        #
+        # (e.g., returns A/params**alpha + B/tokens**beta)
+
+    def fit_scaling_law(data_points, loss_values):
+        # data_points: (N,3) array with columns [problem_id, params, tokens]
+        # loss_values: Array of corresponding loss values ('loss_ij' in the formula)
+        # Returns: Optimized FIXED-EFFECT hyperparameters ('\theta') (up to 6 parameters)
+        #
+        # NOTE: This function must internally model and fit the full additive model:
+        # `loss_ij = f(params_i, tokens_i; \theta) + u_j` (where u_j is the random intercept for problem_id j).
+        # It solves for *both* the fixed parameters '\theta' and all the random parameters 'u_j'.
+        # Its final output must be *only* the global, fixed-effect parameters '\theta'.
+    ```
+    Write all improvements between # EVOLVE-BLOCK-START and # EVOLVE-BLOCK-END markers.
+
+    You are not allowed to use input-dependent feature in scaling_law_func, e.g., median / min / max / etc.
+
+  num_top_programs: 3
+  num_diverse_programs: 2
+  use_template_stochasticity: true
+
+# Database configuration for evolution
+database:
+  population_size: 100
+  archive_size: 50
+  num_islands: 4
+  migration_interval: 20
+  migration_rate: 0.1
+  elite_selection_ratio: 0.1
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.6
+  feature_bins: 10
+
+# Evaluator configuration
+evaluator:
+  timeout: 1200
+  max_retries: 3
+  cascade_evaluation: false
+  cascade_thresholds: [0.3, 0.6]
+  parallel_evaluations: 4
+  use_llm_feedback: false
+
+# Evolution settings
+diff_based_evolution: true
+max_code_length: 100000
