@@ -153,7 +153,7 @@ def _fit_global_model(program, timeout_func) -> Dict[str, Any]:
     all_X_train, all_y_train = [], []
     # Iterate correctly over the new data structure
     for task_name, task_data in train_data_dict.items():
-        all_X_train.append(np.asarray(task_data["data_points"]))
+        all_X_train.append(np.asarray(task_data["X"]))
         all_y_train.append(np.asarray(task_data["y"]))
         
     if not all_X_train:
@@ -234,7 +234,7 @@ def _evaluate_calibrated_model(program, fitted_params_map, timeout_func, calibra
     
     # Loop 1: By Task
     for task_name, task_data in test_data_dict.items():
-        X_task = task_data["data_points"]
+        X_task = task_data["X"]
         y_task = task_data["y"]
         
         if X_task.size == 0 or y_task.size == 0:
@@ -354,7 +354,7 @@ if __name__ == "__main__":
         sys.exit(1)
 
     print(f"--- Running Evaluation for Program: {args.program_path} ---")
-    final_results = evaluate(args.program_path, verbose=True)
+    final_results = evaluate(args.program_path)
 
     if "error" in final_results and final_results["error"]:
         print("\n--- ⛔ EVALUATION FAILED ⛔ ---")
@@ -378,8 +378,7 @@ if __name__ == "__main__":
                 
                 nmse_t = metrics.get('nmse', np.nan)
                 nmae_t = metrics.get('nmae', np.nan)
-                r2_t = metrics.get('r2', np.nan)
-                print(f"  Task '{task_name}': NMSE={nmse_t: <8.4f}, NMAE={nmae_t: <8.4f}, R²={r2_t: <8.4f}")
+                print(f"  Task '{task_name}': NMSE={nmse_t: <8.4f}, NMAE={nmae_t: <8.4f}")
         except Exception as e:
             print(f"  Failed to display per-task metrics: {e}")
 
