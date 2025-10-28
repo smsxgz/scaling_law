@@ -1,14 +1,14 @@
 # Configuration for data constrained scaling law discovery with OpenEvolve
-max_iterations: 100
+max_iterations: 200
 checkpoint_interval: 10
 log_level: "INFO"
 random_seed: 1234
 
 # LLM configuration
 llm:
-  primary_model: gemini-2.5-pro
+  primary_model: gpt-5
   primary_model_weight: 0.5
-  secondary_model: gpt-5
+  secondary_model: gemini-2.5-pro
   secondary_model_weight: 0.5
   api_base: "http://api.llm.wq/v1"
   max_tokens: 16384
@@ -68,8 +68,8 @@ database:
   migration_interval: 25
   migration_rate: 0.1
   elite_selection_ratio: 0.1
-  exploration_ratio: 0.2
-  exploitation_ratio: 0.7
+  exploration_ratio: 0.3
+  exploitation_ratio: 0.6
   feature_dimensions: ["combined_score", "complexity", "diversity"]
   feature_bins: 10
 
