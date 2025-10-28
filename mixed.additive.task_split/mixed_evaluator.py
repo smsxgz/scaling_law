@@ -138,7 +138,7 @@ def _import_program(program_path: str):
 
 # --- Evaluation Pipelines ---
 
-def _fit_global_model(program, timeout_func) -> Dict[str, Any]:
+def _fit_global_model(program) -> Dict[str, Any]:
     """Loads training data, concatenates it, and fits the global model."""
     fit_scaling_law = program.fit_scaling_law
 
@@ -162,7 +162,7 @@ def _fit_global_model(program, timeout_func) -> Dict[str, Any]:
     X_combined = np.concatenate(all_X_train, axis=0)
     y_combined = np.concatenate(all_y_train, axis=0)
 
-    global_params = timeout_func(fit_scaling_law, args=(X_combined, y_combined))
+    global_params = run_with_timeout(fit_scaling_law, args=(X_combined, y_combined))
     if global_params is None:
         return get_failure_result("fit_scaling_law returned None.")
 
@@ -207,7 +207,7 @@ def _calibrate_predictions(pred_fixed, true_loss, mode, eps):
     return None
 
 
-def _evaluate_calibrated_model(program, fitted_params_map, timeout_func, calibration_mode):
+def _evaluate_calibrated_model(program, fitted_params_map, calibration_mode):
     """Loads test data, runs calibration, and returns metrics."""
     scaling_law_func = program.scaling_law_func
 
@@ -253,7 +253,7 @@ def _evaluate_calibrated_model(program, fitted_params_map, timeout_func, calibra
                 continue
 
             # Get fixed-effect predictions for this problem
-            pred_fixed_problem = timeout_func(scaling_law_func, args=(X_problem, global_params))
+            pred_fixed_problem = run_with_timeout(scaling_law_func, args=(X_problem, global_params))
             if pred_fixed_problem is None: continue
             
             true_loss_problem = y_problem
@@ -286,7 +286,7 @@ def _evaluate_calibrated_model(program, fitted_params_map, timeout_func, calibra
     )
 
 
-def evaluate(program_path: str) -> Dict[str, Any]:
+def evaluate(program_path: str, verbose: bool = False) -> Dict[str, Any]:
     """
     High-level, single-call evaluation function.
 
@@ -320,7 +320,7 @@ def evaluate(program_path: str) -> Dict[str, Any]:
                 )
 
         # --- 2. Fit on training data ---
-        fit_result = _fit_global_model(program, run_with_timeout)
+        fit_result = _fit_global_model(program)
         
         if "fitted_params" not in fit_result:
             error = fit_result.get("error", "Unknown fitting error.")
@@ -332,11 +332,12 @@ def evaluate(program_path: str) -> Dict[str, Any]:
         test_result = _evaluate_calibrated_model(
             program,
             fitted_params_map,
-            run_with_timeout,
             calibration_mode
         )
 
-        test_result["fitted_params"] = fitted_params_map
+        if verbose:
+            test_result["fitted_params"] = fitted_params_map
+        
         return test_result
 
     except Exception as e:
